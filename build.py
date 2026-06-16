@@ -111,7 +111,62 @@ MODULES = [
     ),
 ]
 
-ENCRYPTLY_BIN = ROOT / "tools" / "encryptly" / "encryptly"
+ENCRYPTLY_DIR = ROOT / "tools" / "encryptly"
+ENCRYPTLY_BINARIES = {
+    "linux-x64": ENCRYPTLY_DIR / "linux-x64" / "encryptly",
+    "linux-arm64": ENCRYPTLY_DIR / "linux-arm64" / "encryptly",
+    "macos-arm64": ENCRYPTLY_DIR / "macos-arm64" / "encryptly",
+    "windows-x64": ENCRYPTLY_DIR / "windows-x64" / "encryptly.exe",
+    "windows-arm64": ENCRYPTLY_DIR / "windows-arm64" / "encryptly.exe",
+}
+LEGACY_ENCRYPTLY_BIN = ENCRYPTLY_DIR / "encryptly"
+
+
+def _normalize_arch(machine: str) -> Optional[str]:
+    machine = machine.lower()
+    if machine in {"x86_64", "amd64"}:
+        return "x64"
+    if machine in {"aarch64", "arm64"}:
+        return "arm64"
+    return None
+
+
+def _normalize_os() -> Optional[str]:
+    system = platform.system().lower()
+    if system == "linux":
+        return "linux"
+    if system == "darwin":
+        return "macos"
+    if system == "windows":
+        return "windows"
+    return None
+
+
+def detect_encryptly_platform() -> Optional[str]:
+    os_name = _normalize_os()
+    arch = _normalize_arch(platform.machine())
+    if os_name is None or arch is None:
+        return None
+    return f"{os_name}-{arch}"
+
+
+def get_encryptly_bin() -> Optional[Path]:
+    target = detect_encryptly_platform()
+    if target is not None:
+        binary = ENCRYPTLY_BINARIES.get(target)
+        if binary is not None and binary.exists():
+            return binary
+
+    if LEGACY_ENCRYPTLY_BIN.exists():
+        return LEGACY_ENCRYPTLY_BIN
+
+    return None
+
+
+def encryptly_platform_help() -> str:
+    detected = detect_encryptly_platform() or "unsupported"
+    available = ", ".join(sorted(ENCRYPTLY_BINARIES))
+    return f"detected {detected}; available: {available}"
 
 class Colors:
     GREEN = "\033[92m"
@@ -326,8 +381,12 @@ def generate_logd(
 ) -> bool:
     print(f"\n  {color('▸', Colors.CYAN)} Generating {color('build.logd', Colors.BOLD)}...")
 
-    if not ENCRYPTLY_BIN.exists():
-        print(f"    {color('✗', Colors.RED)} encryptly binary not found at {ENCRYPTLY_BIN}; cannot create build.logd")
+    encryptly_bin = get_encryptly_bin()
+    if encryptly_bin is None:
+        print(
+            f"    {color('✗', Colors.RED)} encryptly binary not found "
+            f"({encryptly_platform_help()}); cannot create build.logd"
+        )
         return False
 
     # Workspace must live under $HOME because encryptly refuses paths outside home.
@@ -375,12 +434,9 @@ def generate_logd(
                 log_lines.append(output)
         (safe_dir / "build.log").write_text("\n".join(log_lines), encoding="utf-8")
 
-        # Single encryptly call — auto-generates safe_pw, creates sensitive.enc
-        # internally with HMAC-SHA256("Lobster$4R", safe_pw), then packs
-        # workspace + sensitive.enc into build.logd using safe_pw.
         sr = subprocess.run(
             [
-                str(ENCRYPTLY_BIN),
+                str(encryptly_bin),
                 "pack",
                 str(logd_path),
                 "--include",
